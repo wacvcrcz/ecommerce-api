@@ -61,7 +61,7 @@ app.use('/api', limiter);
 
 // --- API Routes --- //
 app.get('/', (req, res) => {
-    res.send('E-commerce API is running...');
+    res.send('Kit4Elite API is running...');
 });
 
 app.use('/api/products', productRoutes);
