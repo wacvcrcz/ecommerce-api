@@ -1,0 +1,12 @@
+# Dependencies
+/node_modules
+
+# Environment variables - VERY IMPORTANT!
+.env
+
+# Logs
+npm-debug.log
+yarn-error.log
+
+# Build output
+/dist
