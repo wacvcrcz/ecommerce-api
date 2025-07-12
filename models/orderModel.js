@@ -36,8 +36,10 @@ const orderSchema = new mongoose.Schema({
         required: [true, 'Please provide a contact number for the order'],
     },
     shippingAddress: {
-        type: String,
-        required: [true, 'Please provide a shipping address'],
+        address: { type: String, required: true },
+        city: { type: String, required: true },
+        postalCode: { type: String, required: true },
+        country: { type: String, required: true },
     },
     whatsappNotified: {
         type: Boolean,
