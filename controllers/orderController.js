@@ -6,6 +6,8 @@ const Product = require('../models/productModel');
 // @route   POST /api/orders
 // @access  Private
 const createOrder = asyncHandler(async (req, res) => {
+    // Note: The request sends 'orderItems', but our database schema uses 'products'.
+    // This is perfectly fine; we just need to handle the mapping correctly.
     const { orderItems, shippingAddress, contact } = req.body;
 
     if (!orderItems || orderItems.length === 0) {
@@ -13,27 +15,48 @@ const createOrder = asyncHandler(async (req, res) => {
         throw new Error('No order items');
     }
 
-    // Fetch products from DB to ensure prices are correct and stock is available
-    const productIds = orderItems.map(item => item.product);
+    // --- FIX 1: Get product IDs from the request using `item.productId` ---
+    const productIds = orderItems.map(item => item.productId);
+
+    // Fetch all products from DB in a single query for efficiency
     const productsFromDB = await Product.find({ _id: { $in: productIds } });
 
+    // This helps quickly look up products by their ID in the next step
+    const productsMap = new Map(productsFromDB.map(p => [p._id.toString(), p]));
+
     let totalAmount = 0;
+    
+    // Build the final array for our order schema
     const finalOrderItems = orderItems.map(item => {
-        const product = productsFromDB.find(p => p._id.toString() === item.product);
-        if (!product) throw new Error(`Product with id ${item.product} not found`);
-        if (product.stock < item.quantity) throw new Error(`Not enough stock for ${product.name}`);
+        // --- FIX 2: Find the matching product from our map using `item.productId` ---
+        const product = productsMap.get(item.productId);
+        
+        // --- FIX 3: Update error message to use the correct variable for accurate debugging ---
+        if (!product) {
+            // Throw a 404 error because the resource (product) was not found
+            res.status(404);
+            throw new Error(`Product with id ${item.productId} not found`);
+        }
+        
+        if (product.stock < item.quantity) {
+            // Throw a 400 bad request error because the requested quantity is too high
+            res.status(400);
+            throw new Error(`Not enough stock for ${product.name}. Requested: ${item.quantity}, Available: ${product.stock}`);
+        }
         
         totalAmount += product.price * item.quantity;
+        
+        // Return an object that matches the `products` array in our orderSchema
         return {
-            product: product._id,
+            product: product._id,       // This field is named 'product' in the schema
             quantity: item.quantity,
-            price: product.price // Use price from DB, not from client
+            price: product.price,       // Always use the price from the DB to prevent client-side manipulation
         };
     });
 
     const order = new Order({
         user: req.user._id,
-        products: finalOrderItems,
+        products: finalOrderItems, // The array we just created
         shippingAddress,
         contact,
         totalAmount,
@@ -42,7 +65,6 @@ const createOrder = asyncHandler(async (req, res) => {
     const createdOrder = await order.save();
     
     // TODO: Implement WhatsApp notification logic here
-    // e.g., using Twilio API
     console.log(`--- WHATSAPP SIMULATION ---`);
     console.log(`To: ${process.env.WHATSAPP_ADMIN_NUMBER}`);
     console.log(`New Order #${createdOrder._id} from ${req.user.name}. Total: $${totalAmount}. Contact: ${contact}`);
@@ -63,12 +85,13 @@ const getMyOrders = asyncHandler(async (req, res) => {
 // @route   GET /api/orders/:id
 // @access  Private
 const getOrderById = asyncHandler(async (req, res) => {
+    // The `.populate` in the schema's 'pre-find' hook will run here automatically
     const order = await Order.findById(req.params.id);
     
     if (order) {
         // Check if the user is the owner or an admin
         if (order.user._id.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
-            res.status(403);
+            res.status(403); // Forbidden
             throw new Error('Not authorized to view this order');
         }
         res.json(order);
