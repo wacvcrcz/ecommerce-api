@@ -1,87 +1,189 @@
 const asyncHandler = require('express-async-handler');
+const mongoose = require('mongoose');
 const Product = require('../models/productModel');
 const Category = require('../models/categoryModel');
 
-// @desc    Fetch all products with smart filtering
-// @route   GET /api/products
-// @access  Public
-const getProducts = asyncHandler(async (req, res) => {
-    const { search, category, tags, min, max, sort, page = 1, limit = 12 } = req.query;
+// --- Helper Function to Build the Aggregation's $match Stage ---
 
-    // FIX: 'filter' object is now declared inside the function to prevent state persistence between requests.
-    const filter = {};
+const buildMatchStage = async (queryParams) => {
+    const { search, category, tags, tagMode, min, max, inStock, minRating } = queryParams;
+    
+    const matchStage = {};
 
-    // Fuzzy search on name and description
+    // 1. Fuzzy search on name and description
     if (search) {
-        filter.$or = [
+        matchStage.$or = [
             { name: { $regex: search, $options: 'i' } },
             { description: { $regex: search, $options: 'i' } },
         ];
     }
 
-    // Filter by category (can be ID or name/slug)
+    // 2. Filter by category (supports multiple comma-separated categories)
     if (category) {
-        // Check if category is a valid ObjectId, otherwise treat it as a name/slug
-        const isObjectId = category.match(/^[0-9a-fA-F]{24}$/);
-        const categoryFilter = isObjectId
-            ? { _id: category }
-            : { $or: [{ name: { $regex: category, $options: 'i' } }, { slug: { $regex: category, $options: 'i' } }] };
-
-        const foundCategory = await Category.findOne(categoryFilter);
-        if (foundCategory) {
-            filter.category = foundCategory._id;
+        const categoryNames = category.split(',').map(c => c.trim());
+        // Find all category documents matching the names/slugs
+        const categories = await Category.find({
+            $or: [
+                { name: { $in: categoryNames.map(c => new RegExp(c, 'i')) } },
+                { slug: { $in: categoryNames.map(s => new RegExp(s, 'i')) } },
+            ]
+        }).select('_id');
+        
+        // If categories were found, filter by their IDs
+        if (categories.length > 0) {
+            matchStage.category = { $in: categories.map(c => c._id) };
         } else {
-            // If the specified category doesn't exist, return no products
-            return res.json({ products: [], page: 1, pages: 0, total: 0 });
+            // If no matching category is found, we add a condition that will result in zero matches.
+            matchStage.category = new mongoose.Types.ObjectId(); 
         }
     }
 
-    // Filter by tags (comma-separated, matches any of the tags)
+    // 3. Filter by tags (supports 'any' or 'all' logic)
     if (tags) {
-        filter.tags = { $in: tags.split(',').map(tag => tag.trim()) };
+        const tagList = tags.split(',').map(tag => tag.trim());
+        // Default to $in (matches any tag) unless tagMode is 'all'
+        matchStage.tags = { [tagMode === 'all' ? '$all' : '$in']: tagList };
     }
 
-    // Filter by price range (more robust implementation)
-    if (min || max) {
-        filter.price = {};
-        if (min) {
-            filter.price.$gte = Number(min);
-        }
-        if (max) {
-            filter.price.$lte = Number(max);
+    // 4. Filter by price range
+    const priceFilter = {};
+    if (min && !isNaN(Number(min))) {
+        priceFilter.$gte = Number(min);
+    }
+    if (max && !isNaN(Number(max))) {
+        priceFilter.$lte = Number(max);
+    }
+    if (Object.keys(priceFilter).length > 0) {
+        matchStage.price = priceFilter;
+    }
+
+    // 5. Filter by stock status
+    if (inStock) {
+        if (inStock === 'true') {
+            matchStage.stock = { $gt: 0 };
+        } else if (inStock === 'false') {
+            matchStage.stock = { $eq: 0 };
         }
     }
 
-    // Sorting options
-    const sortOptions = {};
-    if (sort) {
-        // e.g., sort=price:desc or sort=createdAt:asc
-        const [field, order] = sort.split(':');
-        sortOptions[field] = order === 'desc' ? -1 : 1;
+    // 6. Filter by average rating (applied after calculating it)
+    if (minRating && !isNaN(Number(minRating))) {
+        // This will be used in a $match stage *after* the rating calculation
+        matchStage.averageRating = { $gte: Number(minRating) };
+    }
+
+    return matchStage;
+};
+
+
+// @desc    Fetch all products with smart filtering & aggregation
+// @route   GET /api/products
+// @access  Public
+const getProducts = asyncHandler(async (req, res) => {
+    // Sanitize pagination inputs
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 12;
+    const skip = (page - 1) * limit;
+
+    // Build the initial filtering stage
+    const matchStage = await buildMatchStage(req.query);
+
+    // Build the sorting stage
+    const sortStage = {};
+    if (req.query.sort) {
+        const sortFields = req.query.sort.split(',');
+        sortFields.forEach(field => {
+            const [key, order] = field.split(':');
+            sortStage[key.trim()] = order === 'desc' ? -1 : 1;
+        });
     } else {
-        sortOptions.createdAt = -1; // Default sort
+        sortStage.createdAt = -1; // Default sort
     }
 
-    const count = await Product.countDocuments(filter);
-    const products = await Product.find(filter)
-        .sort(sortOptions)
-        .limit(Number(limit))
-        .skip((Number(page) - 1) * Number(limit))
-        .exec();
+    // --- Aggregation Pipeline ---
+    // Aggregation allows for more complex data processing like joins and computed fields.
+    
+    // Note: This assumes you have a `reviews` collection and a 'rating' field in it.
+    // If not, you can remove the first two stages ($lookup, $addFields) and the 'averageRating' logic.
+    const aggregationPipeline = [
+        // Stage 1: (Optional but recommended) Join with reviews to get ratings
+        {
+            $lookup: {
+                from: 'reviews', // The name of your reviews collection
+                localField: '_id',
+                foreignField: 'product', // The field in the review model that references the product
+                as: 'reviews'
+            }
+        },
+        // Stage 2: (Optional) Calculate the average rating and count
+        {
+            $addFields: {
+                averageRating: { $ifNull: [ { $avg: '$reviews.rating' }, 0 ] },
+                reviewCount: { $size: '$reviews' }
+            }
+        },
+        // Stage 3: Apply all the filters (from our helper function)
+        { $match: matchStage },
+        
+        // Stage 4: Use $facet to run two parallel operations:
+        // 1. Get the total count of documents that match the filter
+        // 2. Get the paginated subset of documents
+        {
+            $facet: {
+                metadata: [{ $count: 'total' }],
+                data: [
+                    { $sort: sortStage }, 
+                    { $skip: skip }, 
+                    { $limit: limit },
+                    { $project: { reviews: 0 } } // Optional: Exclude the full reviews array from final output
+                ]
+            }
+        }
+    ];
 
+    const result = await Product.aggregate(aggregationPipeline);
+
+    const products = result[0].data;
+    const total = result[0].metadata[0] ? result[0].metadata[0].total : 0;
+    
     res.json({
         products,
-        page: Number(page),
-        pages: Math.ceil(count / Number(limit)),
-        total: count,
+        page,
+        pages: Math.ceil(total / limit),
+        total,
     });
 });
+
+// The rest of the controller can remain largely the same, but here they are for completeness.
 
 // @desc    Fetch single product
 // @route   GET /api/products/:id
 // @access  Public
 const getProductById = asyncHandler(async (req, res) => {
-    const product = await Product.findById(req.params.id);
+    // We can also use aggregation here to include averageRating on the single product page
+    const aggregationPipeline = [
+        { $match: { _id: new mongoose.Types.ObjectId(req.params.id) } },
+        {
+            $lookup: {
+                from: 'reviews',
+                localField: '_id',
+                foreignField: 'product',
+                as: 'reviews'
+            }
+        },
+        {
+            $addFields: {
+                averageRating: { $ifNull: [ { $avg: '$reviews.rating' }, 0 ] },
+                reviewCount: { $size: '$reviews' }
+            }
+        },
+        // For a single product, you might want to show the reviews. If not, project them out.
+        // { $project: { 'reviews.product': 0, 'reviews.__v': 0 } } // Example of cleaning up review data
+    ];
+
+    const result = await Product.aggregate(aggregationPipeline);
+    const product = result[0];
+
     if (product) {
         res.json(product);
     } else {
@@ -90,42 +192,35 @@ const getProductById = asyncHandler(async (req, res) => {
     }
 });
 
+
 // @desc    Create a product
 // @route   POST /api/products
 // @access  Private/Admin
 const createProduct = asyncHandler(async (req, res) => {
-    // Note: Assuming validation for required fields is handled by Mongoose schema
     const { name, description, price, images, stock, category, tags } = req.body;
     
     const product = new Product({
-        name,
-        description,
-        price,
-        images,
-        stock,
-        category,
-        tags,
+        name, description, price, images, stock, category, tags
     });
 
     const createdProduct = await product.save();
     res.status(201).json(createdProduct);
 });
 
+
 // @desc    Update a product
 // @route   PUT /api/products/:id
 // @access  Private/Admin
 const updateProduct = asyncHandler(async (req, res) => {
-    const { name, description, price, images, stock, category, tags } = req.body;
     const product = await Product.findById(req.params.id);
 
     if (product) {
-        product.name = name || product.name;
-        product.description = description || product.description;
-        product.price = price === undefined ? product.price : price;
-        product.images = images || product.images;
-        product.stock = stock === undefined ? product.stock : stock;
-        product.category = category || product.category;
-        product.tags = tags || product.tags;
+        // More robustly update fields only if they are provided in the request body
+        Object.keys(req.body).forEach(key => {
+            if (req.body[key] !== undefined) {
+                product[key] = req.body[key];
+            }
+        });
 
         const updatedProduct = await product.save();
         res.json(updatedProduct);
@@ -135,15 +230,16 @@ const updateProduct = asyncHandler(async (req, res) => {
     }
 });
 
+
 // @desc    Delete a product
 // @route   DELETE /api/products/:id
 // @access  Private/Admin
 const deleteProduct = asyncHandler(async (req, res) => {
-    // Note: Mongoose 6+ uses 'deleteOne' on the model. `remove` is deprecated on documents.
     const product = await Product.findById(req.params.id);
 
     if (product) {
-        await product.deleteOne();
+        await product.deleteOne(); // Mongoose 6+ recommended way
+        // TODO: Also consider deleting associated reviews, cart items, etc.
         res.json({ message: 'Product removed' });
     } else {
         res.status(404);
