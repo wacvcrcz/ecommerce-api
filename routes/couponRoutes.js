@@ -1,4 +1,4 @@
-// routes/couponRoutes.js
+// routes/couponRoutes.js  (This is now for ADMIN only)
 
 const express = require('express');
 const router = express.Router();
@@ -7,15 +7,12 @@ const {
     createCoupon,
     updateCoupon,
     deleteCoupon,
-    validateCoupon,
-} = require('../controllers/couponController');
+} = require('../controllers/couponController'); // Removed validateCoupon from here
 const { protect } = require('../middleware/authMiddleware');
 const { admin } = require('../middleware/adminMiddleware');
 
-// All routes here are protected and admin-only
+// All routes in this file are for admins.
 router.use(protect, admin);
-
-router.post('/validate', validateCoupon);
 
 router.route('/')
     .get(getCoupons)

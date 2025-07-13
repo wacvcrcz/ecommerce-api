@@ -18,6 +18,7 @@ const userRoutes = require('./routes/userRoutes');
 const orderRoutes = require('./routes/orderRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const couponRoutes = require('./routes/couponRoutes');
+const publicCouponRoutes = require('./routes/publicCouponRoutes');
 
 
 // Load env vars
@@ -72,6 +73,7 @@ app.use('/api/user', userRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/admin/coupons', couponRoutes);
+app.use('/api/coupons', publicCouponRoutes);
 
 
 // --- Error Handling Middleware --- //
