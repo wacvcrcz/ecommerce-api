@@ -2,6 +2,7 @@ const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
 const Product = require('../models/productModel');
 const Category = require('../models/categoryModel');
+const Review = require('../models/reviewModel');
 
 // --- Helper Function to Build the Aggregation's $match Stage ---
 
@@ -247,10 +248,53 @@ const deleteProduct = asyncHandler(async (req, res) => {
     }
 });
 
+
+// --- NEW FUNCTION: Create a product review ---
+// @desc    Create a new review
+// @route   POST /api/products/:id/reviews
+// @access  Private
+const createProductReview = asyncHandler(async (req, res) => {
+    const { rating, comment } = req.body;
+    const { id: productId } = req.params;
+
+    const product = await Product.findById(productId);
+
+    if (!product) {
+        res.status(404);
+        throw new Error('Product not found');
+    }
+
+    // Check if the user has already reviewed this product
+    const alreadyReviewed = await Review.findOne({
+        product: productId,
+        user: req.user._id, // Assumes `protect` middleware adds user to req
+    });
+
+    if (alreadyReviewed) {
+        res.status(400);
+        throw new Error('You have already reviewed this product');
+    }
+    
+    // Create the review
+    const review = {
+        name: req.user.name,
+        rating: Number(rating),
+        comment,
+        user: req.user._id,
+        product: productId,
+    };
+    
+    const createdReview = await Review.create(review);
+    
+    // Respond successfully
+    res.status(201).json(createdReview);
+});
+
 module.exports = {
     getProducts,
     getProductById,
     createProduct,
     updateProduct,
     deleteProduct,
+    createProductReview
 };

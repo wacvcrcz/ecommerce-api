@@ -1,8 +1,9 @@
 const categories = [
-    { name: 'Electronics' },
-    { name: 'Apparel' },
-    { name: 'Books' },
-    { name: 'Home Goods' },
+  { name: 'Football' },
+  { name: 'NBA' },
+  { name: 'Formula 1' },
+  { name: 'Windbreakers' },
+  { name: 'Training Kits' },
 ];
 
 module.exports = categories;
