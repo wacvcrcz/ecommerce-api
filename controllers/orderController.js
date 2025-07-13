@@ -1,77 +1,115 @@
 const asyncHandler = require('express-async-handler');
 const Order = require('../models/orderModel');
 const Product = require('../models/productModel');
+const Coupon = require('../models/couponModel'); // --- IMPORT: Coupon model for validation
 
-// @desc    Create new order
+// @desc    Create new order with optional coupon
 // @route   POST /api/orders
 // @access  Private
 const createOrder = asyncHandler(async (req, res) => {
-    // Note: The request sends 'orderItems', but our database schema uses 'products'.
-    // This is perfectly fine; we just need to handle the mapping correctly.
-    const { orderItems, shippingAddress, contact } = req.body;
+    // --- DESTRUCTURE: Add couponCode to the request body variables ---
+    const { orderItems, shippingAddress, contact, couponCode } = req.body;
 
     if (!orderItems || orderItems.length === 0) {
         res.status(400);
-        throw new Error('No order items');
+        throw new Error('No order items in the cart');
     }
 
-    // --- FIX 1: Get product IDs from the request using `item.productId` ---
-    const productIds = orderItems.map(item => item.productId);
-
-    // Fetch all products from DB in a single query for efficiency
+    // --- Step 1: Calculate Subtotal & Prepare Order Items ---
+    const productIds = orderItems.map(item => item._id); // Use _id from cart items
     const productsFromDB = await Product.find({ _id: { $in: productIds } });
-
-    // This helps quickly look up products by their ID in the next step
     const productsMap = new Map(productsFromDB.map(p => [p._id.toString(), p]));
 
-    let totalAmount = 0;
-    
-    // Build the final array for our order schema
+    let subtotal = 0;
+
     const finalOrderItems = orderItems.map(item => {
-        // --- FIX 2: Find the matching product from our map using `item.productId` ---
-        const product = productsMap.get(item.productId);
-        
-        // --- FIX 3: Update error message to use the correct variable for accurate debugging ---
+        const product = productsMap.get(item._id);
+
         if (!product) {
-            // Throw a 404 error because the resource (product) was not found
             res.status(404);
-            throw new Error(`Product with id ${item.productId} not found`);
+            throw new Error(`Product with name ${item.name} not found in database.`);
         }
         
         if (product.stock < item.quantity) {
-            // Throw a 400 bad request error because the requested quantity is too high
             res.status(400);
             throw new Error(`Not enough stock for ${product.name}. Requested: ${item.quantity}, Available: ${product.stock}`);
         }
         
-        totalAmount += product.price * item.quantity;
+        subtotal += product.price * item.quantity;
         
-        // Return an object that matches the `products` array in our orderSchema
         return {
-            product: product._id,       // This field is named 'product' in the schema
+            product: product._id,
             quantity: item.quantity,
-            price: product.price,       // Always use the price from the DB to prevent client-side manipulation
+            price: product.price, // Always use price from DB for security
         };
     });
 
+    // --- Step 2: Validate Coupon & Calculate Discount (if provided) ---
+    let discountAmount = 0;
+    let finalTotalAmount = subtotal;
+    let couponAppliedData = null;
+    let couponToUpdate = null; // To hold the Mongoose document for later update
+
+    if (couponCode) {
+        couponToUpdate = await Coupon.findOne({ code: couponCode.toUpperCase() });
+
+        // Validation checks
+        if (!couponToUpdate) { res.status(400); throw new Error('Invalid coupon code'); }
+        if (!couponToUpdate.isValid) { res.status(400); throw new Error('This coupon is not active or has expired'); }
+        if (subtotal < couponToUpdate.minPurchase) { res.status(400); throw new Error(`Order total must be at least $${couponToUpdate.minPurchase} to use this coupon`); }
+
+        // Calculate discount based on type
+        if (couponToUpdate.discountType === 'percentage') {
+            discountAmount = (subtotal * couponToUpdate.discountValue) / 100;
+        } else if (couponToUpdate.discountType === 'fixed') {
+            discountAmount = couponToUpdate.discountValue;
+        }
+
+        // Ensure discount cannot be greater than the subtotal
+        discountAmount = Math.min(discountAmount, subtotal);
+        finalTotalAmount = subtotal - discountAmount;
+        
+        // Prepare data for storing in the Order document
+        couponAppliedData = {
+            code: couponToUpdate.code,
+            discountType: couponToUpdate.discountType,
+            discountValue: couponToUpdate.discountValue,
+        };
+    }
+
+    // --- Step 3: Create and Save the Order ---
     const order = new Order({
         user: req.user._id,
-        products: finalOrderItems, // The array we just created
+        products: finalOrderItems,
         shippingAddress,
         contact,
-        totalAmount,
+        totalAmount: finalTotalAmount.toFixed(2), // Use the final, potentially discounted, amount
+        discountAmount: discountAmount.toFixed(2),
+        couponApplied: couponAppliedData,
     });
     
     const createdOrder = await order.save();
     
-    // TODO: Implement WhatsApp notification logic here
+    // --- Step 4: Update Coupon Usage (if used) ---
+    if (couponToUpdate) {
+        couponToUpdate.timesUsed += 1;
+        await couponToUpdate.save();
+    }
+    
+    // --- Step 5: Post-Order Actions (e.g., reduce stock, send notifications) ---
+    for (const item of finalOrderItems) {
+        await Product.findByIdAndUpdate(item.product, { $inc: { stock: -item.quantity } });
+    }
+    
+    // WhatsApp notification simulation
     console.log(`--- WHATSAPP SIMULATION ---`);
     console.log(`To: ${process.env.WHATSAPP_ADMIN_NUMBER}`);
-    console.log(`New Order #${createdOrder._id} from ${req.user.name}. Total: $${totalAmount}. Contact: ${contact}`);
+    console.log(`New Order #${createdOrder._id} from ${req.user.name}. Total: $${createdOrder.totalAmount}. Contact: ${contact}`);
     console.log(`-------------------------`);
     
     res.status(201).json(createdOrder);
 });
+
 
 // @desc    Get logged in user's orders
 // @route   GET /api/orders
@@ -81,17 +119,16 @@ const getMyOrders = asyncHandler(async (req, res) => {
     res.json(orders);
 });
 
+
 // @desc    Get order by ID
 // @route   GET /api/orders/:id
 // @access  Private
 const getOrderById = asyncHandler(async (req, res) => {
-    // The `.populate` in the schema's 'pre-find' hook will run here automatically
     const order = await Order.findById(req.params.id);
     
     if (order) {
-        // Check if the user is the owner or an admin
         if (order.user._id.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
-            res.status(403); // Forbidden
+            res.status(403);
             throw new Error('Not authorized to view this order');
         }
         res.json(order);
@@ -100,6 +137,7 @@ const getOrderById = asyncHandler(async (req, res) => {
         throw new Error('Order not found');
     }
 });
+
 
 // @desc    Update order status (by Admin)
 // @route   PUT /api/orders/:id/status
@@ -110,7 +148,6 @@ const updateOrderStatus = asyncHandler(async (req, res) => {
     if (order) {
         order.status = req.body.status || order.status;
         
-        // Mark as notified if status is 'confirmed'
         if (req.body.status === 'confirmed') {
             order.whatsappNotified = true;
         }
@@ -122,6 +159,7 @@ const updateOrderStatus = asyncHandler(async (req, res) => {
         throw new Error('Order not found');
     }
 });
+
 
 // @desc    Get all orders (by Admin)
 // @route   GET /api/admin/orders

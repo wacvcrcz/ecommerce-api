@@ -31,6 +31,15 @@ const orderSchema = new mongoose.Schema({
         enum: ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled'],
         default: 'pending',
     },
+    couponApplied: {
+        code: String,
+        discountType: String,
+        discountValue: Number,
+    },
+    discountAmount: {
+        type: Number,
+        default: 0,
+    },
     contact: {
         type: String,
         required: [true, 'Please provide a contact number for the order'],
