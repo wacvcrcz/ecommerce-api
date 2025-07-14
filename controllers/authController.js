@@ -1,9 +1,8 @@
 // src/controllers/authController.js
 
-import jwt from 'jsonwebtoken';
-import asyncHandler from 'express-async-handler';
-import User from '../models/userModel.js';
-import generateToken from '../utils/generateToken.js';
+const asyncHandler = require('express-async-handler');
+const User = require('../models/userModel.js');
+const generateToken = require('../utils/generateToken.js');
 
 // @desc    Register a new user
 // @route   POST /api/auth/register
@@ -47,6 +46,7 @@ const registerUser = asyncHandler(async (req, res) => {
 const loginUser = asyncHandler(async (req, res) => {
     const { email, password } = req.body;
 
+    // We still need .select('+password') here to ensure we fetch the password
     const user = await User.findOne({ email }).select('+password');
 
     if (user && (await user.matchPassword(password))) {
@@ -67,4 +67,4 @@ const loginUser = asyncHandler(async (req, res) => {
 });
 
 
-export { registerUser, loginUser }; // Use modern ESM export
+module.exports = { registerUser, loginUser }; // Use CommonJS module.exports
