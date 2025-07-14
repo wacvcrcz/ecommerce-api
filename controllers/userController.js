@@ -36,6 +36,9 @@ const updateUserProfile = asyncHandler(async (req, res) => {
         if (req.body.shippingAddress) {
             user.shippingAddress = req.body.shippingAddress;
         }
+        if (req.body.contact) {
+            user.contact = req.body.contact;
+        }
         const updatedUser = await user.save();
         res.json({
             _id: updatedUser._id,
@@ -43,6 +46,7 @@ const updateUserProfile = asyncHandler(async (req, res) => {
             email: updatedUser.email,
             role: updatedUser.role,
             shippingAddress: updatedUser.shippingAddress,
+            contact: updatedUser.contact,
         });
     } else {
         res.status(404);

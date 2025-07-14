@@ -28,6 +28,7 @@ const userSchema = new mongoose.Schema({
         postalCode: { type: String },
         country: { type: String },
     },
+    contact: { type: String },
 }, {
     timestamps: true,
 });
