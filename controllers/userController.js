@@ -33,12 +33,16 @@ const updateUserProfile = asyncHandler(async (req, res) => {
         if (req.body.password) {
             user.password = req.body.password;
         }
+        if (req.body.shippingAddress) {
+            user.shippingAddress = req.body.shippingAddress;
+        }
         const updatedUser = await user.save();
         res.json({
             _id: updatedUser._id,
             name: updatedUser.name,
             email: updatedUser.email,
             role: updatedUser.role,
+            shippingAddress: updatedUser.shippingAddress,
         });
     } else {
         res.status(404);
