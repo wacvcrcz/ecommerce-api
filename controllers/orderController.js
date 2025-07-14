@@ -169,11 +169,57 @@ const getAllOrders = asyncHandler(async (req, res) => {
     res.json(orders);
 });
 
+// @desc    Cancel an order
+// @route   PUT /api/orders/:id/cancel
+// @access  Private
+const cancelOrder = asyncHandler(async (req, res) => {
+    const order = await Order.findById(req.params.id);
+    if (!order) { res.status(404); throw new Error('Order not found'); }
+    if (order.user.toString() !== req.user._id.toString()) { res.status(403); throw new Error('Not authorized'); }
+    
+    // Only allow cancellation if status is 'pending'
+    if (order.status !== 'pending') {
+        res.status(400);
+        throw new Error(`Order cannot be cancelled. Status is: ${order.status}`);
+    }
+
+    // Return stock for cancelled items
+    for (const item of order.products) {
+        await Product.findByIdAndUpdate(item.product, { $inc: { stock: item.quantity } });
+    }
+    
+    order.status = 'cancelled';
+    const updatedOrder = await order.save();
+    res.json(updatedOrder);
+});
+
+// @desc    Update shipping details
+// @route   PUT /api/orders/:id/shipping
+// @access  Private
+const updateShippingDetails = asyncHandler(async (req, res) => {
+    const order = await Order.findById(req.params.id);
+    if (!order) { res.status(404); throw new Error('Order not found'); }
+    if (order.user.toString() !== req.user._id.toString()) { res.status(403); throw new Error('Not authorized'); }
+
+    if (order.status !== 'pending') {
+        res.status(400);
+        throw new Error(`Shipping details cannot be updated. Order status is: ${order.status}`);
+    }
+    
+    const { shippingAddress, contact } = req.body;
+    order.shippingAddress = shippingAddress || order.shippingAddress;
+    order.contact = contact || order.contact;
+    
+    const updatedOrder = await order.save();
+    res.json(updatedOrder);
+});
 
 module.exports = {
     createOrder,
     getMyOrders,
     getOrderById,
     updateOrderStatus,
-    getAllOrders
+    getAllOrders,
+    cancelOrder, 
+    updateShippingDetails 
 };
