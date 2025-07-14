@@ -176,7 +176,7 @@ const getAllOrders = asyncHandler(async (req, res) => {
 const cancelOrder = asyncHandler(async (req, res) => {
     const order = await Order.findById(req.params.id);
     if (!order) { res.status(404); throw new Error('Order not found'); }
-    if (order.user.toString() !== req.user._id.toString()) { res.status(403); throw new Error('Not authorized'); }
+    if (order.user._id.toString() !== req.user._id.toString()) { res.status(403); throw new Error('Not authorized'); }
     
     // Only allow cancellation if status is 'pending'
     if (order.status !== 'pending') {
@@ -200,7 +200,7 @@ const cancelOrder = asyncHandler(async (req, res) => {
 const updateShippingDetails = asyncHandler(async (req, res) => {
     const order = await Order.findById(req.params.id);
     if (!order) { res.status(404); throw new Error('Order not found'); }
-    if (order.user.toString() !== req.user._id.toString()) { res.status(403); throw new Error('Not authorized'); }
+    if (order.user._id.toString() !== req.user._id.toString()) { res.status(403); throw new Error('Not authorized'); }
 
     if (order.status !== 'pending') {
         res.status(400);
