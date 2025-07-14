@@ -1,12 +1,9 @@
-const jwt = require('jsonwebtoken');
-const asyncHandler = require('express-async-handler');
-const User = require('../models/userModel');
+// src/controllers/authController.js
 
-const generateToken = (id) => {
-    return jwt.sign({ id }, process.env.JWT_SECRET, {
-        expiresIn: '30d',
-    });
-};
+import jwt from 'jsonwebtoken';
+import asyncHandler from 'express-async-handler';
+import User from '../models/userModel.js';
+import generateToken from '../utils/generateToken.js';
 
 // @desc    Register a new user
 // @route   POST /api/auth/register
@@ -28,12 +25,15 @@ const registerUser = asyncHandler(async (req, res) => {
     const user = await User.create({ name, email, password });
 
     if (user) {
+        generateToken(res, user._id); 
+
         res.status(201).json({
             _id: user._id,
             name: user.name,
             email: user.email,
             role: user.role,
-            token: generateToken(user._id),
+            shippingAddress: user.shippingAddress,
+            contact: user.contact,
         });
     } else {
         res.status(400);
@@ -41,7 +41,7 @@ const registerUser = asyncHandler(async (req, res) => {
     }
 });
 
-// @desc    Authenticate a user
+// @desc    Authenticate a user (Login)
 // @route   POST /api/auth/login
 // @access  Public
 const loginUser = asyncHandler(async (req, res) => {
@@ -50,12 +50,15 @@ const loginUser = asyncHandler(async (req, res) => {
     const user = await User.findOne({ email }).select('+password');
 
     if (user && (await user.matchPassword(password))) {
+        generateToken(res, user._id);
+
         res.json({
             _id: user._id,
             name: user.name,
             email: user.email,
             role: user.role,
-            token: generateToken(user._id),
+            shippingAddress: user.shippingAddress,
+            contact: user.contact,
         });
     } else {
         res.status(401);
@@ -63,4 +66,5 @@ const loginUser = asyncHandler(async (req, res) => {
     }
 });
 
-module.exports = { registerUser, loginUser };
+
+export { registerUser, loginUser }; // Use modern ESM export
