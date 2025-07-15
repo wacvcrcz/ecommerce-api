@@ -7,6 +7,7 @@ const Review = require('../models/reviewModel');
 // --- Helper Function to Build the Aggregation's $match Stage ---
 
 const buildMatchStage = async (queryParams) => {
+    // Note: The `inStock` parameter is handled here because `stock` is a direct field on the model.
     const { search, category, tags, tagMode, min, max, inStock, minRating } = queryParams;
     
     const matchStage = {};
@@ -34,7 +35,7 @@ const buildMatchStage = async (queryParams) => {
         if (categories.length > 0) {
             matchStage.category = { $in: categories.map(c => c._id) };
         } else {
-            // If no matching category is found, we add a condition that will result in zero matches.
+            // If no matching category is found, add a condition that will result in zero matches.
             matchStage.category = new mongoose.Types.ObjectId(); 
         }
     }
@@ -67,9 +68,9 @@ const buildMatchStage = async (queryParams) => {
         }
     }
 
-    // 6. Filter by average rating (applied after calculating it)
+    // 6. Filter by average rating (will be applied *after* calculation)
     if (minRating && !isNaN(Number(minRating))) {
-        // This will be used in a $match stage *after* the rating calculation
+        // We will add another $match stage later in the pipeline for this
         matchStage.averageRating = { $gte: Number(minRating) };
     }
 
@@ -100,35 +101,28 @@ const getProducts = asyncHandler(async (req, res) => {
     } else {
         sortStage.createdAt = -1; // Default sort
     }
-
-    // --- Aggregation Pipeline ---
-    // Aggregation allows for more complex data processing like joins and computed fields.
     
-    // Note: This assumes you have a `reviews` collection and a 'rating' field in it.
-    // If not, you can remove the first two stages ($lookup, $addFields) and the 'averageRating' logic.
     const aggregationPipeline = [
-        // Stage 1: (Optional but recommended) Join with reviews to get ratings
+        // Join with reviews to get ratings for calculation
         {
             $lookup: {
-                from: 'reviews', // The name of your reviews collection
+                from: 'reviews', 
                 localField: '_id',
-                foreignField: 'product', // The field in the review model that references the product
+                foreignField: 'product',
                 as: 'reviews'
             }
         },
-        // Stage 2: (Optional) Calculate the average rating and count
+        // Calculate the average rating and count
         {
             $addFields: {
                 averageRating: { $ifNull: [ { $avg: '$reviews.rating' }, 0 ] },
                 reviewCount: { $size: '$reviews' }
             }
         },
-        // Stage 3: Apply all the filters (from our helper function)
+        // Apply all the filters (from our helper function)
         { $match: matchStage },
         
-        // Stage 4: Use $facet to run two parallel operations:
-        // 1. Get the total count of documents that match the filter
-        // 2. Get the paginated subset of documents
+        // Use $facet to run two parallel operations:
         {
             $facet: {
                 metadata: [{ $count: 'total' }],
@@ -136,7 +130,7 @@ const getProducts = asyncHandler(async (req, res) => {
                     { $sort: sortStage }, 
                     { $skip: skip }, 
                     { $limit: limit },
-                    { $project: { reviews: 0 } } // Optional: Exclude the full reviews array from final output
+                    { $project: { reviews: 0 } } // Exclude the full reviews array from final output
                 ]
             }
         }
@@ -155,13 +149,12 @@ const getProducts = asyncHandler(async (req, res) => {
     });
 });
 
-// The rest of the controller can remain largely the same, but here they are for completeness.
 
-// @desc    Fetch single product
+// @desc    Fetch single product by ID
 // @route   GET /api/products/:id
 // @access  Public
 const getProductById = asyncHandler(async (req, res) => {
-    // We can also use aggregation here to include averageRating on the single product page
+    // Use aggregation to include calculated fields like averageRating
     const aggregationPipeline = [
         { $match: { _id: new mongoose.Types.ObjectId(req.params.id) } },
         {
@@ -178,15 +171,21 @@ const getProductById = asyncHandler(async (req, res) => {
                 reviewCount: { $size: '$reviews' }
             }
         },
-        // For a single product, you might want to show the reviews. If not, project them out.
-        // { $project: { 'reviews.product': 0, 'reviews.__v': 0 } } // Example of cleaning up review data
     ];
 
     const result = await Product.aggregate(aggregationPipeline);
-    const product = result[0];
+    // Find the original document to populate the 'category' virtual field
+    const product = await Product.findById(req.params.id);
+    const aggregatedData = result[0];
+    
+    if (product && aggregatedData) {
+        // Combine the populated document with the aggregated data
+        const finalProduct = {
+            ...product.toObject(),
+            ...aggregatedData
+        };
 
-    if (product) {
-        res.json(product);
+        res.json(finalProduct);
     } else {
         res.status(404);
         throw new Error('Product not found');
@@ -216,7 +215,7 @@ const updateProduct = asyncHandler(async (req, res) => {
     const product = await Product.findById(req.params.id);
 
     if (product) {
-        // More robustly update fields only if they are provided in the request body
+        // Dynamically update fields only if they are provided in the request body
         Object.keys(req.body).forEach(key => {
             if (req.body[key] !== undefined) {
                 product[key] = req.body[key];
@@ -239,8 +238,7 @@ const deleteProduct = asyncHandler(async (req, res) => {
     const product = await Product.findById(req.params.id);
 
     if (product) {
-        await product.deleteOne(); // Mongoose 6+ recommended way
-        // TODO: Also consider deleting associated reviews, cart items, etc.
+        await product.deleteOne(); 
         res.json({ message: 'Product removed' });
     } else {
         res.status(404);
@@ -249,16 +247,15 @@ const deleteProduct = asyncHandler(async (req, res) => {
 });
 
 
-// --- NEW FUNCTION: Create a product review ---
-// @desc    Create a new review
+// @desc    Create a new review for a product
 // @route   POST /api/products/:id/reviews
 // @access  Private
 const createProductReview = asyncHandler(async (req, res) => {
     const { rating, comment } = req.body;
     const { id: productId } = req.params;
+    const user = req.user; // Assuming protect middleware sets req.user
 
     const product = await Product.findById(productId);
-
     if (!product) {
         res.status(404);
         throw new Error('Product not found');
@@ -267,7 +264,7 @@ const createProductReview = asyncHandler(async (req, res) => {
     // Check if the user has already reviewed this product
     const alreadyReviewed = await Review.findOne({
         product: productId,
-        user: req.user._id, // Assumes `protect` middleware adds user to req
+        user: user._id,
     });
 
     if (alreadyReviewed) {
@@ -275,19 +272,16 @@ const createProductReview = asyncHandler(async (req, res) => {
         throw new Error('You have already reviewed this product');
     }
     
-    // Create the review
-    const review = {
-        name: req.user.name,
+    // Create the new review
+    const review = await Review.create({
+        name: user.name,
         rating: Number(rating),
         comment,
-        user: req.user._id,
+        user: user._id,
         product: productId,
-    };
+    });
     
-    const createdReview = await Review.create(review);
-    
-    // Respond successfully
-    res.status(201).json(createdReview);
+    res.status(201).json(review);
 });
 
 module.exports = {

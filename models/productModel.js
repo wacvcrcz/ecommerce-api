@@ -19,12 +19,25 @@ const productSchema = new mongoose.Schema({
         type: String,
         required: true,
     }],
-    stock: {
-        type: Number,
-        required: [true, 'A product must have a stock quantity'],
-        min: 0,
-        default: 1,
-    },
+    // --- CHANGED ---
+    // The old 'stock' field is replaced by the 'inventory' array.
+    inventory: [{
+        _id: false, // Don't create an _id for each inventory entry
+        size: {
+            type: String,
+            required: [true, 'Each inventory item must have a size.'],
+            enum: {
+                values: ['S', 'M', 'L', 'XL', 'XXL'],
+                message: '{VALUE} is not a supported size. Supported sizes are S, M, L, XL, XXL.',
+            },
+        },
+        quantity: {
+            type: Number,
+            required: [true, 'Each size must have a stock quantity.'],
+            min: 0,
+            default: 0,
+        },
+    }],
     category: {
         type: mongoose.Schema.ObjectId,
         ref: 'Category',
@@ -36,6 +49,14 @@ const productSchema = new mongoose.Schema({
     toJSON: { virtuals: true },
     toObject: { virtuals: true },
 });
+
+
+// --- ADDED ---
+// Virtual property to calculate the total stock from the inventory array.
+productSchema.virtual('totalStock').get(function() {
+    return this.inventory ? this.inventory.reduce((total, item) => total + item.quantity, 0) : 0;
+});
+
 
 // Populate category details when finding a product
 productSchema.pre(/^find/, function(next) {

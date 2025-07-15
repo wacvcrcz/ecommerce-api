@@ -20,6 +20,16 @@ const orderSchema = new mongoose.Schema({
         price: { // Price at the time of order
             type: Number,
             required: true,
+        },
+        // --- ADDED ---
+        size: {
+            type: String,
+            required: [true, 'Each product in an order must have a size specified.'],
+        },
+        customization: { // Optional customization details
+            name: { type: String, trim: true },
+            number: { type: Number },
+            appliedFee: { type: Number, default: 0 } // Store the fee that was applied
         }
     }],
     totalAmount: {
