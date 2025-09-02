@@ -67,6 +67,10 @@ app.get('/', (req, res) => {
     res.send('Kit4Elite API is running...');
 });
 
+app.get('/health', (req, res) => {
+    res.status(200).json({ status: 'healthy', uptime: process.uptime() });
+});
+
 app.use('/api/products', productRoutes);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/auth', authRoutes);
